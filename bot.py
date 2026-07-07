@@ -1,12 +1,10 @@
 import os
-import json
 import logging
 import asyncio
 from datetime import datetime, timezone
 
 import discord
 from discord.ext import tasks
-import websockets
 from dotenv import load_dotenv
 
 import keywords
@@ -16,8 +14,6 @@ load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 TWITTERAPI_KEY = os.getenv("TWITTERAPI_KEY")
 LIST_ID = os.getenv("LIST_ID")  # the X List ID containing all monitored beat reporters
-
-WS_URL = "wss://ws.twitterapi.io/twitter/tweet/stream"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("twitter_bot")
@@ -68,12 +64,26 @@ class TwitterMonitorBot(discord.Client):
         )
         self.tree.add_command(setchannel_cmd)
 
-        testfeed_cmd = discord.app_commands.Command(
-            name="testfeed",
-            description="Debug: test the TwitterAPI.io connection and show raw results",
-            callback=self._testfeed_callback,
+        recenttweets_cmd = discord.app_commands.Command(
+            name="recenttweets",
+            description="Show the most recent tweets from your monitored list",
+            callback=self._recenttweets_callback,
         )
-        self.tree.add_command(testfeed_cmd)
+        self.tree.add_command(recenttweets_cmd)
+
+        search_cmd = discord.app_commands.Command(
+            name="search",
+            description="Search recent tweets from your list for a specific word or phrase",
+            callback=self._search_callback,
+        )
+        self.tree.add_command(search_cmd)
+
+        addtolist_cmd = discord.app_commands.Command(
+            name="addtolist",
+            description="Add one or more comma-separated handles to the monitored X List",
+            callback=self._addtolist_callback,
+        )
+        self.tree.add_command(addtolist_cmd)
 
         try:
             synced = await self.tree.sync()
@@ -87,7 +97,7 @@ class TwitterMonitorBot(discord.Client):
             f"✅ Beat reporter alerts will post in {interaction.channel.mention}."
         )
 
-    async def _testfeed_callback(self, interaction: discord.Interaction):
+    async def _recenttweets_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         import requests
 
@@ -111,65 +121,82 @@ class TwitterMonitorBot(discord.Client):
         for tweet in tweets[:3]:
             await interaction.channel.send(embed=build_tweet_embed(tweet))
 
+    async def _search_callback(self, interaction: discord.Interaction, term: str):
+        await interaction.response.defer()
+        import requests
+
+        url = "https://api.twitterapi.io/twitter/list/tweets"
+        headers = {"X-API-Key": TWITTERAPI_KEY}
+        params = {"listId": LIST_ID}
+
+        try:
+            resp = await asyncio.to_thread(requests.get, url, headers=headers, params=params, timeout=15)
+            data = resp.json()
+        except Exception as e:
+            await interaction.followup.send(f"Request failed: {e}")
+            return
+
+        tweets = data.get("tweets", [])
+        term_lower = term.lower()
+        matches = [t for t in tweets if term_lower in t.get("text", "").lower()]
+
+        if not matches:
+            await interaction.followup.send(f"No recent tweets in your list mention '{term}'.")
+            return
+
+        await interaction.followup.send(f"Found {len(matches)} recent tweet(s) mentioning '{term}':")
+        for tweet in matches[:5]:
+            await interaction.channel.send(embed=build_tweet_embed(tweet))
+
+    async def _addtolist_callback(self, interaction: discord.Interaction, handles: str):
+        await interaction.response.defer()
+        import requests
+
+        usernames = [h.strip().lstrip("@") for h in handles.split(",") if h.strip()]
+        url = "https://api.twitterapi.io/twitter/list/add_member"
+        headers = {"X-API-Key": TWITTERAPI_KEY}
+
+        results = []
+        for username in usernames:
+            try:
+                resp = await asyncio.to_thread(
+                    requests.post, url, headers=headers,
+                    json={"listId": LIST_ID, "userName": username}, timeout=15,
+                )
+                if resp.status_code == 200:
+                    results.append(f"✅ @{username}")
+                else:
+                    results.append(f"❌ @{username} — status {resp.status_code}: {resp.text[:150]}")
+            except Exception as e:
+                results.append(f"❌ @{username} — {e}")
+
+        await interaction.followup.send("\n".join(results)[:2000])
+
     async def on_ready(self):
         log.info("Logged in as %s", self.user)
-        if not stream_listener.is_running():
-            stream_listener.start(self)
+        if not poll_list_tweets.is_running():
+            poll_list_tweets.start(self)
+        if not watchdog.is_running():
+            watchdog.start()
 
 
 client = TwitterMonitorBot()
 
-
-@tasks.loop(seconds=1, count=1)  # runs once, then the loop inside manages its own reconnect
-async def stream_listener(bot: TwitterMonitorBot):
-    """
-    Connects to TwitterAPI.io's real-time WebSocket stream for the
-    configured X List, classifies each tweet, and posts matches to Discord.
-    Reconnects with exponential backoff on any disconnect.
-    """
-    backoff = 1
-    while True:
-        try:
-            headers = {"X-API-Key": TWITTERAPI_KEY}
-            async with websockets.connect(WS_URL, extra_headers=headers) as ws:
-                log.info("Connected to TwitterAPI.io stream")
-                backoff = 1  # reset on successful connect
-
-                # NOTE: exact subscribe payload format needs to be confirmed
-                # against TwitterAPI.io's real docs once we have a live key --
-                # this is a reasonable placeholder based on their documented
-                # rule-based pattern, not yet verified against a live response.
-                await ws.send(json.dumps({"action": "subscribe", "listId": LIST_ID}))
-
-                async for raw_message in ws:
-                    try:
-                        data = json.loads(raw_message)
-                    except Exception:
-                        continue
-                    await handle_incoming_tweet(bot, data)
-
-        except Exception as e:
-            log.error("Stream disconnected, reconnecting in %ss: %s", backoff, e)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 30)
+POLL_SECONDS = int(os.getenv("POLL_SECONDS", "90"))
 
 
-async def handle_incoming_tweet(bot: TwitterMonitorBot, data: dict):
-    if data.get("event_type") != "tweet":
-        return  # ignore ping/connected events
+@tasks.loop(seconds=POLL_SECONDS)
+async def poll_list_tweets(bot: TwitterMonitorBot):
+    try:
+        await _poll_list_tweets_body(bot)
+    except Exception as e:
+        # Top-level safety net -- an unhandled exception here would
+        # otherwise permanently stop this loop with no automatic recovery.
+        log.error("poll_list_tweets cycle failed unexpectedly, will retry next cycle: %s", e)
 
-    tweet = data.get("tweet", {})
-    text = tweet.get("text", "")
-    tweet_id = tweet.get("id")
 
-    if not text or not tweet_id:
-        return
-    if storage.already_posted(tweet_id):
-        return
-
-    matches = keywords.classify_tweet(text)
-    if not matches:
-        return  # not betting-relevant, skip
+async def _poll_list_tweets_body(bot: TwitterMonitorBot):
+    import requests
 
     channel_id = storage.get_config("announce_channel_id")
     if not channel_id:
@@ -178,12 +205,57 @@ async def handle_incoming_tweet(bot: TwitterMonitorBot, data: dict):
     if channel is None:
         return
 
+    url = "https://api.twitterapi.io/twitter/list/tweets"
+    headers = {"X-API-Key": TWITTERAPI_KEY}
+    params = {"listId": LIST_ID}
+
     try:
-        await channel.send(embed=build_tweet_embed(tweet, matches))
-        storage.mark_posted(tweet_id)
-        log.info("Posted tweet %s (categories: %s)", tweet_id, [m["key"] for m in matches])
+        resp = await asyncio.to_thread(requests.get, url, headers=headers, params=params, timeout=15)
+        data = resp.json()
     except Exception as e:
-        log.error("Failed to post tweet %s: %s", tweet_id, e)
+        log.error("Failed to fetch list tweets: %s", e)
+        return
+
+    tweets = data.get("tweets", [])
+    # Process oldest-first so if multiple new tweets arrived since last
+    # check, they post to Discord in chronological order.
+    for tweet in reversed(tweets):
+        text = tweet.get("text", "")
+        tweet_id = tweet.get("id")
+        if not text or not tweet_id:
+            continue
+        if storage.already_posted(tweet_id):
+            continue
+
+        matches = keywords.classify_tweet(text)
+        storage.mark_posted(tweet_id)  # mark seen regardless of match, so we never re-check it
+        if not matches:
+            continue  # not betting-relevant, skip silently
+
+        try:
+            await channel.send(embed=build_tweet_embed(tweet, matches))
+            log.info("Posted tweet %s (categories: %s)", tweet_id, [m["key"] for m in matches])
+        except Exception as e:
+            log.error("Failed to post tweet %s: %s", tweet_id, e)
+
+
+@poll_list_tweets.before_loop
+async def before_poll():
+    await client.wait_until_ready()
+
+
+@tasks.loop(minutes=2)
+async def watchdog():
+    """If the poll loop somehow stops for any reason not already caught
+    above, this notices within 2 minutes and restarts it."""
+    if not poll_list_tweets.is_running():
+        log.error("poll_list_tweets was found stopped -- restarting it now")
+        poll_list_tweets.start(client)
+
+
+@watchdog.before_loop
+async def before_watchdog():
+    await client.wait_until_ready()
 
 
 if __name__ == "__main__":
