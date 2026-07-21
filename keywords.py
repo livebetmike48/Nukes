@@ -19,7 +19,7 @@ ACCOUNT_OVERRIDES -- accounts whose EVERY post routes to a group's channel,
 # ---------------------------------------------------------------------------
 GROUPS = {
     "live_action": {
-        "emoji": "⚡",
+        "emoji": "\u26a1",
         "label": "Live Action",
         "keywords": [
             "warming up", "getting loose", "on deck", "pinch hit", "pinch-hit",
@@ -27,7 +27,7 @@ GROUPS = {
         ],
     },
     "injury": {
-        "emoji": "🚑",
+        "emoji": "\U0001f691",
         "label": "Injury Watch",
         "keywords": [
             "trainer visit", "hurt", "injured", "grabbing at", "favoring",
@@ -37,7 +37,7 @@ GROUPS = {
         ],
     },
     "scratched": {
-        "emoji": "🔀",
+        "emoji": "\U0001f500",
         "label": "Starter Scratched",
         "keywords": [
             "scratched", "pushed back", "bumped back", "shifted back",
@@ -62,7 +62,7 @@ ACCOUNT_OVERRIDES = {
 # ---------------------------------------------------------------------------
 CATEGORIES = {
     "injury": {
-        "emoji": "🚑",
+        "emoji": "\U0001f691",
         "label": "Injury/IL",
         "keywords": [
             "injured list", " il ", "il with", "placed on the il", "activated from",
@@ -73,23 +73,27 @@ CATEGORIES = {
         ],
     },
     "pitch_limit": {
-        "emoji": "⚾",
+        "emoji": "\u26be",
         "label": "Pitch Count/Limit",
         "keywords": [
             "pitch count", "pitch limit", "innings limit", "on a limit",
             "shut down", "shut it down", "will not pitch", "skipping his start",
             "pushed back", "extra rest", "limited to",
+            "workload", "won't start", "will not start",
+            "manage innings", "manage his innings", "managing his innings",
+            "innings management", "managing his workload", "monitor his workload",
+            "monitoring his workload",
         ],
     },
     "bullpen": {
-        "emoji": "🔥",
+        "emoji": "\U0001f525",
         "label": "Bullpen",
         "keywords": [
             "bullpen", "piggyback", "piggy back",
         ],
     },
     "lineup": {
-        "emoji": "📋",
+        "emoji": "\U0001f4cb",
         "label": "Lineup Move",
         "keywords": [
             "starting lineup", "batting order", "out of the lineup", "day off",
@@ -99,7 +103,7 @@ CATEGORIES = {
         ],
     },
     "roster": {
-        "emoji": "🔄",
+        "emoji": "\U0001f504",
         "label": "Roster Move",
         "keywords": [
             "recalled", "optioned", "designated for assignment", " dfa'd", " dfa ",
